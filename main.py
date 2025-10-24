@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import sys
+import time
 from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -14,6 +15,7 @@ from scraper.discord import send_discord_message
 from scraper.sites import get_parser_for_url, get_wait_selector_for_url
 
 SERIES_FILE = "series.yaml"
+SLEEP_BETWEEN = float(os.getenv("SCRAPE_SLEEP", "0.6"))
 
 def _url_looks_bad(u: str) -> Optional[str]:
     if not (u.startswith("http://") or u.startswith("https://")):
@@ -28,16 +30,11 @@ def _url_looks_bad(u: str) -> Optional[str]:
 def _title_of(html: str) -> str:
     try:
         soup = BeautifulSoup(html, "html.parser")
-        t = (soup.title.string or "").strip()
-        return t
+        return (soup.title.string or "").strip()
     except Exception:
         return ""
 
 def process_series_entry(entry: Dict[str, Any]) -> Tuple[str, str, Optional[str], Optional[str], str]:
-    """
-    Return (name, url, prev_chapter, current_chapter, status)
-    status: 'init' | 'update' | 'ok' | 'keep' | 'info'
-    """
     name = entry["name"].strip()
     url  = entry["url"].strip()
     prev = str(entry.get("chapter") or "").strip() or None
@@ -53,14 +50,11 @@ def process_series_entry(entry: Dict[str, Any]) -> Tuple[str, str, Optional[str]
     html, nav_title, antibot_reason = fetch_html(url, wait_selector=wait_selector, timeout_ms=30000, series_name=name)
 
     if antibot_reason:
-        # Si parece challenge anti-bot, dilo explícito y no confundas con "no se detectó capítulo"
-        pretty = f"anti-bot ({antibot_reason})"
-        yprint(f"   [diag] página protegida por {pretty}. Título='{nav_title or _title_of(html)}', len={len(html)}")
+        yprint(f"   [diag] página protegida por anti-bot ({antibot_reason}). Título='{nav_title or _title_of(html)}', len={len(html)}")
         return name, url, prev, prev or "0", "info"
 
     cur  = parser(html)
     if cur is None:
-        # Diagnóstico extra (ayuda a ver por qué el parser no halló nada)
         yprint(f"   [diag] parser sin match. Título='{nav_title or _title_of(html)}', len={len(html)}")
         return name, url, prev, prev or "0", "info"
 
@@ -89,7 +83,7 @@ def main() -> int:
     results = []
     changed = False
 
-    for s in series:
+    for idx, s in enumerate(series, 1):
         yprint(f"==> {s['name']}")
         try:
             name, url, prev, cur, status = process_series_entry(s)
@@ -114,6 +108,9 @@ def main() -> int:
 
         results.append({"name": name, "cur": cur, "status": status})
 
+        # Pausa para no disparar anti-bot por ráfagas
+        time.sleep(SLEEP_BETWEEN)
+
     updates = [r for r in results if r["status"] == "update"]
     inits   = [r for r in results if r["status"] == "init"]
     oks     = [r for r in results if r["status"] == "ok"]
@@ -127,18 +124,15 @@ def main() -> int:
     yprint(f"  Mantenidos (keep): {len(keeps)}")
     yprint(f"  Info: {len(infos)}")
 
-    # Discord (opcional)
-    lines = []
-    from scraper.utils import fmt_series_line
-    for r in results:
-        lines.append(fmt_series_line(r["name"], r["cur"], r["status"]))
+    # Discord
+    lines = [fmt_series_line(r["name"], r["cur"], r["status"]) for r in results]
     body = "**Estado de tus series**\n" + "\n".join(lines)
 
     webhook = os.getenv("DISCORD_WEBHOOK")
     if webhook:
         ok = send_discord_message(webhook, body)
         if not ok:
-            yprint("[warn] Discord no respondió OK (silenciado).")
+            yprint("[warn] Discord no respondió OK (activa DISCORD_DEBUG=1 para ver el error).")
     else:
         yprint("[info] DISCORD_WEBHOOK no definido; no se envía a Discord.")
 
@@ -148,9 +142,7 @@ def main() -> int:
         os.system('git config user.email "github-actions[bot]@users.noreply.github.com"')
         os.system("git add series.yaml")
         os.system('git commit -m "chore: update last_chapter [skip ci]" || true')
-        push_res = os.system("git push || true")
-        if push_res != 0:
-            yprint("[warn] git push no autorizado o falló; continuando sin fallar el job.")
+        os.system("git push || true")
 
     return 0
 
