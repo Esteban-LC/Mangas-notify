@@ -9,20 +9,26 @@ DUMPS_DIR = os.getenv("HTML_DUMPS_DIR", "last_html")
 os.makedirs(DUMPS_DIR, exist_ok=True)
 
 ANTI_BOT_PATTERNS = [
+    # Inglés
     r"Just a moment",
     r"Checking your browser before accessing",
-    r"Attention Required! \| Cloudflare",
+    r"Attention Required!\s*\|\s*Cloudflare",
     r"cf-error-details",
     r"cf-please-wait",
     r"__cf_chl_captcha",
     r"hcaptcha",
     r"Please enable JavaScript and Cookies",
+    # Español (¡clave para tus logs!)
+    r"Un momento",
+    r"Comprobando tu navegador antes de acceder",
+    r"Atenci[oó]n requerida",
+    r"Por favor (habilita|activa) JavaScript y las Cookies",
 ]
 
 def _looks_like_antibot(html: str) -> bool:
     if not html:
         return True
-    txt = html[:100000]  # limitar
+    txt = html[:120000]
     for pat in ANTI_BOT_PATTERNS:
         if re.search(pat, txt, re.IGNORECASE):
             return True
@@ -41,7 +47,6 @@ def _safe_close(context, browser):
         pass
 
 def _dump_html(kind: str, name: str, html: str) -> str:
-    # name -> slug
     slug = re.sub(r"[^a-z0-9\-_.]+", "_", name.lower())[:80]
     path = os.path.join(DUMPS_DIR, f"{slug}.{kind}.html")
     try:
@@ -52,15 +57,10 @@ def _dump_html(kind: str, name: str, html: str) -> str:
     return path
 
 def _try_fetch(p, browser_name: str, url: str, wait_selector: Optional[str], timeout_ms: int) -> Tuple[str, str]:
-    """
-    Devuelve (html, title) con un intento usando `browser_name` ("chromium" o "firefox").
-    """
     ua_map = {
-        "chromium": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36",
+        "chromium": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "firefox":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
-        "webkit":   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                    "Version/17.3 Safari/605.1.15",
+        "webkit":   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
     }
     browser = context = page = None
     try:
@@ -78,6 +78,7 @@ def _try_fetch(p, browser_name: str, url: str, wait_selector: Optional[str], tim
             "Referer": "https://www.google.com/",
         })
         page = context.new_page()
+
         # Primer modo
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         if wait_selector:
@@ -90,7 +91,7 @@ def _try_fetch(p, browser_name: str, url: str, wait_selector: Optional[str], tim
         html = page.content()
         title = page.title()
 
-        # Si parece anti-bot, segundo modo
+        # Segundo intento si parece anti-bot
         if _looks_like_antibot(html):
             page.goto(url, wait_until="networkidle", timeout=timeout_ms)
             if wait_selector:
@@ -111,43 +112,21 @@ def fetch_html(url: str, wait_selector: Optional[str] = None, timeout_ms: int = 
                series_name: Optional[str] = None) -> Tuple[str, str, Optional[str]]:
     """
     Devuelve (html, title, antibot_reason)
-    - Intenta Chromium y luego Firefox
-    - Detecta páginas anti-bot; si no logra evitarlas, devuelve reason != None
-    - Vuelca HTMLs problemáticos a last_html/*.html para inspección
+    - Intenta Chromium, Firefox y WebKit
+    - Marca como antibot si detecta challenge; vuelca HTML en last_html/
     """
     with sync_playwright() as p:
         reasons = []
-        # 1) Chromium
-        try:
-            html, title = _try_fetch(p, "chromium", url, wait_selector, timeout_ms)
-            if not _looks_like_antibot(html):
-                return html, title, None
-            reasons.append("chromium/antibot")
-            # dump
-            _dump_html("chromium", series_name or "unknown", html)
-        except Exception as e:
-            reasons.append(f"chromium/{type(e).__name__}")
 
-        time.sleep(0.6)
-
-        # 2) Firefox
-        try:
-            html, title = _try_fetch(p, "firefox", url, wait_selector, timeout_ms)
-            if not _looks_like_antibot(html):
-                return html, title, None
-            reasons.append("firefox/antibot")
-            _dump_html("firefox", series_name or "unknown", html)
-        except Exception as e:
-            reasons.append(f"firefox/{type(e).__name__}")
-
-        # 3) (opcional) WebKit como último recurso
-        try:
-            html, title = _try_fetch(p, "webkit", url, wait_selector, timeout_ms)
-            if not _looks_like_antibot(html):
-                return html, title, None
-            reasons.append("webkit/antibot")
-            _dump_html("webkit", series_name or "unknown", html)
-        except Exception as e:
-            reasons.append(f"webkit/{type(e).__name__}")
+        for engine in ("chromium", "firefox", "webkit"):
+            try:
+                html, title = _try_fetch(p, engine, url, wait_selector, timeout_ms)
+                if not _looks_like_antibot(html):
+                    return html, title, None
+                reasons.append(f"{engine}/antibot")
+                _dump_html(engine, series_name or "unknown", html)
+            except Exception as e:
+                reasons.append(f"{engine}/{type(e).__name__}")
+            time.sleep(0.6)
 
     return html if 'html' in locals() else "", title if 'title' in locals() else "", "; ".join(reasons) or "blocked"
