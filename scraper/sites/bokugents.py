@@ -4,19 +4,30 @@ from bs4 import BeautifulSoup
 from typing import Optional, List
 from ..utils import comparable_tuple, sanitize_chapter
 
-CAP_RE = re.compile(r"Cap(?:[íi]tulo)?\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+CAP_RE  = re.compile(r"(?:Cap(?:[íi]tulo)?|Cap\.)\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+CH_RE   = re.compile(r"Ch(?:apter|\.)\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+EP_RE   = re.compile(r"(?:Episodio|Ep\.)\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+HASH_RE = re.compile(r"#\s*(\d+(?:[.,]\d+)?)")
 
 def parse_latest_chapter(html: str) -> Optional[str]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: List[str] = []
 
-    for a in soup.select('a'):
+    for a in soup.select("a"):
         t = a.get_text(" ", strip=True)
-        m = CAP_RE.search(t) or re.search(r"#\s*(\d+(?:\.\d+)?)", t)
+        m = CAP_RE.search(t) or CH_RE.search(t) or EP_RE.search(t) or HASH_RE.search(t)
+        if not m:
+            href = a.get("href") or ""
+            m = CAP_RE.search(href) or CH_RE.search(href) or EP_RE.search(href) or HASH_RE.search(href)
         if m:
             cap = sanitize_chapter(m.group(1))
-            if len(cap.split(".",1)[0]) <= 4:
-                candidates.append(cap)
+            ent = cap.split(".",1)[0]
+            try:
+                if len(ent) > 4 or int(ent) > 1000:
+                    continue
+            except:
+                continue
+            candidates.append(cap)
 
     if not candidates:
         return None
