@@ -4,19 +4,35 @@ from bs4 import BeautifulSoup
 from typing import Optional, List
 from ..utils import comparable_tuple, sanitize_chapter
 
-CAP_RE = re.compile(r"Cap(?:[íi]tulo)?\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+# Amplía variantes y acepta coma como decimal
+CAP_RE  = re.compile(r"(?:Cap(?:[íi]tulo)?|Cap\.)\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+CH_RE   = re.compile(r"Ch(?:apter|\.)\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+HASH_RE = re.compile(r"#\s*(\d+(?:[.,]\d+)?)")
+
+def _is_sane(num_str: str) -> bool:
+    try:
+        ent = num_str.split(".", 1)[0]
+        if len(ent) > 4:
+            return False
+        if int(ent) > 1000:
+            return False
+        return True
+    except Exception:
+        return False
 
 def parse_latest_chapter(html: str) -> Optional[str]:
     soup = BeautifulSoup(html, "html.parser")
     candidates: List[str] = []
-    for a in soup.select('a'):
+    for a in soup.select("a"):
         t = a.get_text(" ", strip=True)
-        m = CAP_RE.search(t) or re.search(r"#\s*(\d+(?:\.\d+)?)", t)
+        m = CAP_RE.search(t) or CH_RE.search(t) or HASH_RE.search(t)
         if m:
             cap = sanitize_chapter(m.group(1))
-            if len(cap.split(".",1)[0]) <= 4:
+            if _is_sane(cap):
                 candidates.append(cap)
+
     if not candidates:
         return None
+
     candidates.sort(key=lambda s: comparable_tuple(s))
     return candidates[-1]
