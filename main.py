@@ -3,6 +3,7 @@ import os
 import sys
 from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 
 from scraper.utils import (
     load_yaml, save_yaml, yprint, comparable_tuple, sanitize_chapter,
@@ -24,6 +25,14 @@ def _url_looks_bad(u: str) -> Optional[str]:
         return "host o path vacío"
     return None
 
+def _title_of(html: str) -> str:
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        t = (soup.title.string or "").strip()
+        return t
+    except Exception:
+        return ""
+
 def process_series_entry(entry: Dict[str, Any]) -> Tuple[str, str, Optional[str], Optional[str], str]:
     """
     Return (name, url, prev_chapter, current_chapter, status)
@@ -41,17 +50,24 @@ def process_series_entry(entry: Dict[str, Any]) -> Tuple[str, str, Optional[str]
     parser = get_parser_for_url(url)
     wait_selector = get_wait_selector_for_url(url)
 
-    html = fetch_html(url, wait_selector=wait_selector, timeout_ms=30000)
-    cur  = parser(html)
+    html, nav_title, antibot_reason = fetch_html(url, wait_selector=wait_selector, timeout_ms=30000, series_name=name)
 
+    if antibot_reason:
+        # Si parece challenge anti-bot, dilo explícito y no confundas con "no se detectó capítulo"
+        pretty = f"anti-bot ({antibot_reason})"
+        yprint(f"   [diag] página protegida por {pretty}. Título='{nav_title or _title_of(html)}', len={len(html)}")
+        return name, url, prev, prev or "0", "info"
+
+    cur  = parser(html)
     if cur is None:
+        # Diagnóstico extra (ayuda a ver por qué el parser no halló nada)
+        yprint(f"   [diag] parser sin match. Título='{nav_title or _title_of(html)}', len={len(html)}")
         return name, url, prev, prev or "0", "info"
 
     if prev is None:
         return name, url, None, cur, "init"
 
     if not sane_chapter_for_update(prev, cur):
-        # No bajamos capítulo si cur < prev
         return name, url, prev, prev, "keep"
 
     if comparable_tuple(cur) > comparable_tuple(prev):
@@ -111,11 +127,11 @@ def main() -> int:
     yprint(f"  Mantenidos (keep): {len(keeps)}")
     yprint(f"  Info: {len(infos)}")
 
-    # Mensaje unificado para Discord
+    # Discord (opcional)
     lines = []
+    from scraper.utils import fmt_series_line
     for r in results:
-        pretty = fmt_series_line(r["name"], r["cur"], r["status"])
-        lines.append(pretty)
+        lines.append(fmt_series_line(r["name"], r["cur"], r["status"]))
     body = "**Estado de tus series**\n" + "\n".join(lines)
 
     webhook = os.getenv("DISCORD_WEBHOOK")
